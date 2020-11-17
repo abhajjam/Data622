@@ -1,0 +1,171 @@
+---
+title: "Data622 - Test1"
+author: "Abdelmalek Hajjam"
+date: "11/15/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r message=FALSE}
+library(caret)
+library(ipred)       # for fitting bagged decision trees
+#library(bootstrap)
+
+library(e1071)
+library(tidyverse)
+library(cvAUC)
+library(pROC)
+
+#library(bootstrap)
+#  reading data 
+#data <- read.csv("HW1data.csv", header = TRUE)
+data <- data.frame(
+  X = as.factor(c(5, 5, 5, 5, 5, 5, 19, 19, 19, 19, 19, 19, 35, 35, 35, 35, 35, 35, 51, 51, 51, 51, 51, 51, 55, 55, 55, 55, 55, 55, 63, 63, 63, 63, 63, 63)),
+  Y = c("a","b","c","d","e","f","a","b","c","d","e","f","a","b","c","d","e","f","a","b","c","d","e","f","a","b","c","d","e","f","a","b","c","d","e","f"),
+  label = c("BLUE","BLACK","BLUE","BLACK","BLACK","BLACK","BLUE","BLUE","BLUE","BLUE","BLACK","BLUE","BLACK","BLACK","BLUE","BLACK","BLACK","BLACK","BLACK","BLACK","BLUE","BLACK","BLACK","BLACK","BLACK","BLACK","BLACK","BLACK","BLACK","BLACK","BLACK","BLUE","BLUE","BLUE","BLUE","BLUE")
+)
+head(data)
+dim(data)
+str(data)
+summary(data)
+
+#Checking distibution in origanl data
+prop.table(table(data$label)) * 100
+```
+
+
+## Data Preparation
+
+```{r }
+
+set.seed(123456)
+trainidx<-sample(1:nrow(data) , size=round(0.7*nrow(data)),replace=F) 
+training <- data[trainidx,]
+testing <- data[-trainidx,]
+
+summary(training)
+summary(testing)
+
+#Checking distibution in origanl data
+prop.table(table(training$label)) * 100
+prop.table(table(testing$label)) * 100
+```
+
+
+# (A) Bagging
+
+We refer to the documentation found here: https://cran.r-project.org/web/packages/ipred/ipred.pdf
+
+## Training the Model
+
+```{r}
+set.seed(98765)
+#do 100 iterations 
+bgModel <- bagging(label ~ ., 
+                      data = training,
+                      nbagg = 100, 
+                      coob = TRUE, 
+                   )
+bgModel
+```
+
+## Testing the Model 
+
+```{r}
+Prediction <- predict(bgModel, testing)
+with(testing, table(Prediction, label))
+```
+
+## Model Metrics
+
+```{r message=FALSE}
+library(pROC)
+cm <- table(Prediction, testing$label)
+
+tn <- cm[1,1]
+fn <- cm[1,2]
+fp <- cm[2,1]
+tp <- cm[2,2]
+
+pred_label <- ifelse(testing$label == 'BLUE', 1, 0)
+# Area under the ROC curve (AUC)
+auc <- auc(roc(Prediction, pred_label))
+
+#Encapsulate those metrics in a simple procedure that we can call later
+getMetrics <- function(tn, fn, fp, tp, auc) {
+
+  tp.bg <- tp / (tp + fn)
+  tn.bg <- tn / (tn + fp)
+  fn.bg <- 1 - tp.bg
+  fp.bg <- 1 - tn.bg
+  acc <- (tp + tn) / (tp + tn + fp + fn)
+
+  mytable <- matrix(c(tp.bg,tn.bg,fn.bg,fp.bg, auc, acc),ncol=1, byrow=TRUE)
+  colnames(mytable) <- c("Value")
+  rownames(mytable) <- c("TP","TN","FN", "FP", "AUC", "ACC")
+  mytable
+}
+
+#call the above procedure
+myMetrics <- getMetrics(tn, fn, fp, tp, auc)
+myMetrics
+```
+
+# (B) LOOCV(JackKnife)
+
+## This code is from Professor Raman  Rmd in Learning Module M11.
+
+```{r}
+N<-nrow(training)
+training$label <- ifelse(training$label == 'BLUE', 1, 0)
+cv_df  <- do.call('rbind',lapply(1:N,FUN=function(idx,data=training) { ### Iterate Over All Points
+   ### Keep One Observation as Test
+   m <- naiveBayes(label~., data = data[-idx,])
+   ### Train Using the Rest of Observations, predict that one observation
+   p <- predict(m, data[idx,-c(3)], type='raw') 
+   # NB returns the probabilities of the classes, 
+   # as per Bayesian Classifier, we take the classs with the higher probability
+   pc <- unlist(apply(round(p), 1, which.max))-1 
+   list("fold"=idx, "m"=m, "predicted"=pc, "actual" = data[idx,c(3)])
+  }
+))
+
+```
+
+## Training Accuray
+
+```{r}
+cv_df<-as.data.frame(cv_df)
+loocv_tbl<-table(as.numeric(cv_df$actual),as.numeric(cv_df$predicted))
+(loocv_caret_cfm<-caret::confusionMatrix(loocv_tbl))
+```
+
+## Tesing The Model
+
+```{r}
+testing$label <- ifelse(testing$label == 'BLUE', 1, 0)
+cv_df <- data.frame(cv_df)
+df.perf<-as.data.frame(do.call('cbind',lapply(cv_df$m,FUN=function(m,data=testing)
+{
+   ### Determine Test Metrics
+  v <- predict(m,data[,-c(3)],type='raw')
+  lbllist <- unlist(apply(round(v), 1, which.max))-1
+ 
+}
+  )))
+
+### Aggregate Test Metrics
+np <- ncol(df.perf)
+predclass <- unlist(apply(df.perf,1,FUN=function(v){ ifelse(sum(v[2:length(v)])/np<0.5,0,1)}))
+loocvtbl <- table(testing[,3], predclass)
+(loocv_cfm<-caret::confusionMatrix(loocvtbl))
+```
+
+# Conclusion
+
+Both bagging and LOOCV performed very well and are both have the same accuracy of 0.81. 
+In my Homework1, my weak learners LR and KNN both had an accuracy of .64 and .73 respectively. Therefore performed poorly comparing to bagging and LOOCV. We were then able to increase the accuracy and obtain a better model using these 2 methods.
+Naive Bayes on the other hand had a better accuracy .82 in my Homework1, but had an AUC of 0.80 which is less than our AUC for Bagging which was .83. Bagging was then a better Model.
+Bagging is a model that is less susceptible to overfitting than the individual models we’ve fit. LOOCV cross validation, on the other hand, is used to estimate the out of sample accuracy.
+
